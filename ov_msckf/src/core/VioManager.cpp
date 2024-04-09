@@ -162,7 +162,7 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
                                                         params.zupt_noise_multiplier, params.zupt_max_disparity);
   }
 }
-
+//[主函数1] 处理imu
 void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
 
   // The oldest time we need IMU with is the last clone
@@ -252,7 +252,7 @@ void VioManager::feed_measurement_simulation(double timestamp, const std::vector
   }
   do_feature_propagate_update(message);
 }
-
+//[主函数2] 处理img
 void VioManager::track_image_and_update(const ov_core::CameraData &message_const) {
 
   // Start timing
@@ -278,7 +278,7 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
   }
 
   // Perform our feature tracking!
-  trackFEATS->feed_new_camera(message);
+  trackFEATS->feed_new_camera(message); //img光追主函数
 
   // If the aruco tracker is available, the also pass to it
   // NOTE: binocular tracking for aruco doesn't make sense as we by default have the ids

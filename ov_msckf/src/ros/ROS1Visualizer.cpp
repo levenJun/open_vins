@@ -435,6 +435,8 @@ void ROS1Visualizer::visualize_final() {
   PRINT_INFO(REDPURPLE "TIME: %.3f seconds\n\n" RESET, (rT2 - rT1).total_microseconds() * 1e-6);
 }
 
+//这个函数是获取imu并做实际处理,处理imu和处理img
+// [主函数]
 void ROS1Visualizer::callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
 
   // convert into correct format
@@ -444,7 +446,8 @@ void ROS1Visualizer::callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
   message.am << msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z;
 
   // send it to our VIO system
-  _app->feed_measurement_imu(message);
+  //[主函数1] 处理imu
+  _app->feed_measurement_imu(message);    
   visualize_odometry(message.timestamp);
 
   // If the processing queue is currently active / running just return so we can keep getting measurements
@@ -475,7 +478,7 @@ void ROS1Visualizer::callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
       while (!camera_queue.empty() && camera_queue.at(0).timestamp < timestamp_imu_inC) {
         auto rT0_1 = boost::posix_time::microsec_clock::local_time();
         double update_dt = 100.0 * (timestamp_imu_inC - camera_queue.at(0).timestamp);
-        _app->feed_measurement_camera(camera_queue.at(0));
+        _app->feed_measurement_camera(camera_queue.at(0));//[主函数2] 处理img
         visualize();
         camera_queue.pop_front();
         auto rT0_2 = boost::posix_time::microsec_clock::local_time();
@@ -534,6 +537,8 @@ void ROS1Visualizer::callback_monocular(const sensor_msgs::ImageConstPtr &msg0, 
   std::sort(camera_queue.begin(), camera_queue.end());
 }
 
+
+//只是将图像数据缓存进Buf,未做下一步处理
 void ROS1Visualizer::callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::ImageConstPtr &msg1, int cam_id0,
                                      int cam_id1) {
 
@@ -584,7 +589,7 @@ void ROS1Visualizer::callback_stereo(const sensor_msgs::ImageConstPtr &msg0, con
 
   // append it to our queue of images
   std::lock_guard<std::mutex> lck(camera_queue_mtx);
-  camera_queue.push_back(message);
+  camera_queue.push_back(message);                        //只是将图像数据缓存进Buf,未做下一步处理
   std::sort(camera_queue.begin(), camera_queue.end());
 }
 

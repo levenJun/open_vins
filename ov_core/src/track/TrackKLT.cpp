@@ -42,6 +42,10 @@ void TrackKLT::feed_new_camera(const CameraData &message) {
     std::exit(EXIT_FAILURE);
   }
 
+  //1),预处理
+  //    直方图均衡化
+  //    提取金字塔
+
   // Preprocessing steps that we do not parallelize
   // NOTE: DO NOT PARALLELIZE THESE!
   // NOTE: These seem to be much slower if you parallelize them...
@@ -199,6 +203,13 @@ void TrackKLT::feed_monocular(const CameraData &message, size_t msg_id) {
   PRINT_ALL("[TIME-KLT]: %.4f seconds for total\n", (rT5 - rT1).total_microseconds() * 1e-6);
 }
 
+//双目 img 光追 主函数
+//做纯粹的特征提取和前后帧/左右图的特征追踪匹配和关联
+//所有特征都用同一个自增id
+//由同一个database地图统一管理:特征id  --> [ {图像stamp, 相机id1, 观测uv} {图像stamp, 相机id2, 观测uv}]
+  //1)[[last帧]]左图上补点；左图新补的点用LK光流在右图上追踪匹配,匹配上的点作为右图的新增点；右图上继续补剩下的点
+  //2)左右图分别做[last帧]->[cur帧]的光流追終:mask_ll和mask_rr中值为1的表示追終成功的点
+  //3)把追終成功的点逐个按 id 作为唯一tag 缓存进地图中  
 void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t msg_id_right) {
 
   // Lock this data feed for this camera
@@ -239,6 +250,7 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     return;
   }
 
+  //1)[[last帧]]左图上补点；左图新补的点用LK光流在右图上追踪匹配,匹配上的点作为右图的新增点；右图上继续补剩下的点
   // First we should make that the last images have enough features so we can do KLT
   // This will "top-off" our number of tracks so always have a constant number
   int pts_before_detect = (int)pts_last[cam_id_left].size();
@@ -253,9 +265,11 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
 
   // Our return success masks, and predicted new features
   std::vector<uchar> mask_ll, mask_rr;
-  std::vector<cv::KeyPoint> pts_left_new = pts_left_old;
+  std::vector<cv::KeyPoint> pts_left_new = pts_left_old;    //上帧kp点作为下帧光流追終初值
   std::vector<cv::KeyPoint> pts_right_new = pts_right_old;
 
+
+  //2)左右图分别做[last帧]->[cur帧]的光流追終:mask_ll和mask_rr中值为1的表示追終成功的点
   // Lets track temporally
   parallel_for_(cv::Range(0, 2), LambdaBody([&](const cv::Range &range) {
                   for (int i = range.start; i < range.end; i++) {
@@ -302,6 +316,9 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
   std::vector<cv::KeyPoint> good_left, good_right;
   std::vector<size_t> good_ids_left, good_ids_right;
 
+  // 3)把追終成功的点逐个按 id 作为唯一tag 缓存进地图中
+  //左图追踪成功的点添加进  good_left
+  //顺便看看右图是不是有和左图id相同的点(相同代表是左右匹配点),也顺被把右图的点添加进  good_right
   // Loop through all left points
   for (size_t i = 0; i < pts_left_new.size(); i++) {
     // Ensure we do not have any bad KLT tracks (i.e., points are negative)
@@ -337,6 +354,7 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     }
   }
 
+  //把右图追終成功但是未在上一步被添加的点继续添加进 good_right
   // Loop through all right points
   for (size_t i = 0; i < pts_right_new.size(); i++) {
     // Ensure we do not have any bad KLT tracks (i.e., points are negative)
@@ -353,6 +371,9 @@ void TrackKLT::feed_stereo(const CameraData &message, size_t msg_id_left, size_t
     }
   }
 
+
+  // 把最终成功的点按 id 作为唯一tag 缓存进地图中
+  //  特征id  --> [ {相机id1, 图像stamp, 观测uv} {相机id2, 图像stamp, 观测uv}]
   // Update our feature database, with theses new observations
   for (size_t i = 0; i < good_left.size(); i++) {
     cv::Point2f npt_l = camera_calib.at(cam_id_left)->undistort_cv(good_left.at(i).pt);
@@ -527,6 +548,21 @@ void TrackKLT::perform_detection_monocular(const std::vector<cv::Mat> &img0pyr, 
   }
 }
 
+//主要作用:[[last帧]]左图上补点；左图新补的点用LK光流在右图上追踪匹配,匹配上的点作为右图的新增点；右图上继续补剩下的点
+//1)左图上补点:
+// 1-1)作唯一占用check:临近域网格唯一；普通网格未作check；mask唯一；边界有效性check
+// 1-2)本last点通过唯一占用check,开始作占用赋值:临近域网格置为占用；普通网格占用数+1；作mask占用叠加:mask0_updated
+// 1-3)在有效普通网格valid_locs处,提取新的cv::FAST点
+      // 单个网格区域内单独提取,且取响应值最大的n个点,且做了非最大值抑制
+      // 且只提取固定mask的空白处的点
+      // 然后还做了亚像素refine(没细看)
+      // 对新提的点做领域网格重复性check
+//2)左图新提取的特征点,在右图上用LK追終匹配,在右图上追踪上的特征点作为右图新提取到的点
+//  最终新提取的左图点叠加到 pts0, 右图上追踪到的有效特征点叠加到 pts1
+//  且给新点赋新id (按序自增)
+//3)左图的流程再来一遍,在右图上补点,补的点叠加到pts1
+//补充a)mask 未被刷新重置, pts和ids被刷新重置了
+//补充b)所有点用同一个自增currid序列,左图新补点currid++,左右图光流匹配不新增id,右图新补点currid++
 void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, const std::vector<cv::Mat> &img1pyr, const cv::Mat &mask0,
                                         const cv::Mat &mask1, size_t cam_id_left, size_t cam_id_right, std::vector<cv::KeyPoint> &pts0,
                                         std::vector<cv::KeyPoint> &pts1, std::vector<size_t> &ids0, std::vector<size_t> &ids1) {
@@ -539,7 +575,7 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
   cv::Mat grid_2d_close0 = cv::Mat::zeros(size_close0, CV_8UC1);
   float size_x0 = (float)img0pyr.at(0).cols / (float)grid_x;
   float size_y0 = (float)img0pyr.at(0).rows / (float)grid_y;
-  cv::Size size_grid0(grid_x, grid_y); // width x height
+  cv::Size size_grid0(grid_x, grid_y); // width x height                                            //普通网格cell大小
   cv::Mat grid_2d_grid0 = cv::Mat::zeros(size_grid0, CV_8UC1);
   cv::Mat mask0_updated = mask0.clone();
   auto it0 = pts0.begin();
@@ -549,8 +585,10 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
     cv::KeyPoint kpt = *it0;
     int x = (int)kpt.pt.x;
     int y = (int)kpt.pt.y;
-    int edge = 10;
-    if (x < edge || x >= img0pyr.at(0).cols - edge || y < edge || y >= img0pyr.at(0).rows - edge) {
+    int edge = 10;                                                                                    //1-1)作唯一占用check:
+                                                                                                          // 边界有效性check
+                                                                                                          // 临近域网格唯一；普通网格未check；mask唯一
+    if (x < edge || x >= img0pyr.at(0).cols - edge || y < edge || y >= img0pyr.at(0).rows - edge) {   //删除在边界10范围外的last点?
       it0 = pts0.erase(it0);
       it1 = ids0.erase(it1);
       continue;
@@ -558,7 +596,7 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
     // Calculate mask coordinates for close points
     int x_close = (int)(kpt.pt.x / (float)min_px_dist);
     int y_close = (int)(kpt.pt.y / (float)min_px_dist);
-    if (x_close < 0 || x_close >= size_close0.width || y_close < 0 || y_close >= size_close0.height) {
+    if (x_close < 0 || x_close >= size_close0.width || y_close < 0 || y_close >= size_close0.height) {//进一步按(最近点距离确认)边界,删除范围外的last点?
       it0 = pts0.erase(it0);
       it1 = ids0.erase(it1);
       continue;
@@ -566,30 +604,30 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
     // Calculate what grid cell this feature is in
     int x_grid = std::floor(kpt.pt.x / size_x0);
     int y_grid = std::floor(kpt.pt.y / size_y0);
-    if (x_grid < 0 || x_grid >= size_grid0.width || y_grid < 0 || y_grid >= size_grid0.height) {
+    if (x_grid < 0 || x_grid >= size_grid0.width || y_grid < 0 || y_grid >= size_grid0.height) {    //进一步按(网格大小确认)边界,删除范围外的last点?
       it0 = pts0.erase(it0);
       it1 = ids0.erase(it1);
       continue;
     }
     // Check if this keypoint is near another point
-    if (grid_2d_close0.at<uint8_t>(y_close, x_close) > 127) {
+    if (grid_2d_close0.at<uint8_t>(y_close, x_close) > 127) {                                       //如果临近域网格有点了,删除本last点?
       it0 = pts0.erase(it0);
       it1 = ids0.erase(it1);
       continue;
     }
     // Now check if it is in a mask area or not
     // NOTE: mask has max value of 255 (white) if it should be
-    if (mask0.at<uint8_t>(y, x) > 127) {
+    if (mask0.at<uint8_t>(y, x) > 127) {                                                          //如果mask有点了,删除本last点?
       it0 = pts0.erase(it0);
       it1 = ids0.erase(it1);
       continue;
     }
-    // Else we are good, move forward to the next point
-    grid_2d_close0.at<uint8_t>(y_close, x_close) = 255;
-    if (grid_2d_grid0.at<uint8_t>(y_grid, x_grid) < 255) {
+    // Else we are good, move forward to the next point                                           //1-2)本last点通过唯一占用check:开始作占用赋值
+    grid_2d_close0.at<uint8_t>(y_close, x_close) = 255;                                           //临近域网格置为占用
+    if (grid_2d_grid0.at<uint8_t>(y_grid, x_grid) < 255) {                                        //普通网格占用数+1
       grid_2d_grid0.at<uint8_t>(y_grid, x_grid) += 1;
     }
-    // Append this to the local mask of the image
+    // Append this to the local mask of the image                                                 //作mask占用:mask0_updated
     if (x - min_px_dist >= 0 && x + min_px_dist < img0pyr.at(0).cols && y - min_px_dist >= 0 && y + min_px_dist < img0pyr.at(0).rows) {
       cv::Point pt1(x - min_px_dist, y - min_px_dist);
       cv::Point pt2(x + min_px_dist, y + min_px_dist);
@@ -601,7 +639,7 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
 
   // First compute how many more features we need to extract from this image
   double min_feat_percent = 0.50;
-  int num_featsneeded_0 = num_features - (int)pts0.size();
+  int num_featsneeded_0 = num_features - (int)pts0.size();                              //还需要补点数
 
   // LEFT: if we need features we should extract them in the current frame
   // LEFT: we will also try to track them from this frame over to the right frame
@@ -620,17 +658,23 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
     // Create grids we need to extract from and then extract our features (use fast with griding)
     int num_features_grid = (int)((double)num_features / (double)(grid_x * grid_y)) + 1;
     int num_features_grid_req = std::max(1, (int)(min_feat_percent * num_features_grid));
-    std::vector<std::pair<int, int>> valid_locs;
+    std::vector<std::pair<int, int>> valid_locs;            //可用的普通网格位置x,y
     for (int x = 0; x < grid_2d_grid0.cols; x++) {
       for (int y = 0; y < grid_2d_grid0.rows; y++) {
         if ((int)grid_2d_grid0.at<uint8_t>(y, x) < num_features_grid_req && (int)mask0_grid.at<uint8_t>(y, x) != 255) {
-          valid_locs.emplace_back(x, y);
+          valid_locs.emplace_back(x, y);                    //mask未占用 && 普通网格未占满, 普通网格x,y的位置还可用
         }
       }
     }
+
+    //1-3)在有效普通网格valid_locs处,提取新的cv::FAST点
+          // 单个网格区域内单独提取,且取响应值最大的n个点,且做了非最大值抑制
+          // 且只提取固定的mask空白处的点
+          // 然后还做了亚像素refine(没细看)
     std::vector<cv::KeyPoint> pts0_ext;
     Grider_GRID::perform_griding(img0pyr.at(0), mask0_updated, valid_locs, pts0_ext, num_features, grid_x, grid_y, threshold, true);
 
+    //对新提的点做领域网格重复性check
     // Now, reject features that are close a current feature
     std::vector<cv::KeyPoint> kpts0_new;
     std::vector<cv::Point2f> pts0_new;
@@ -655,8 +699,13 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
     // TODO: Or project and search along the epipolar line??
     std::vector<cv::KeyPoint> kpts1_new;
     std::vector<cv::Point2f> pts1_new;
-    kpts1_new = kpts0_new;
-    pts1_new = pts0_new;
+    kpts1_new = kpts0_new;                //左图像上在普通网格占用外 && mask空白处提取的新特征点
+    pts1_new = pts0_new;                  //
+
+
+    //2)左图新提取的特征点,在右图上用LK最终匹配,在右图上追踪上的特征点作为右图新提取到的点
+    //最终新提取的左图点叠加到pts0, 右图上追踪到的有效特征点叠加到pts1
+    //且给新点赋新id (按序自增)
 
     // If we have points, do KLT tracking to get the valid projections into the right image
     if (!pts0_new.empty()) {
@@ -708,6 +757,8 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
       }
     }
   }
+
+  // 3)左图的流程再来一遍,在右图上补点,补的点叠加到pts1
 
   // RIGHT: Now summarise the number of tracks in the right image
   // RIGHT: We will try to extract some monocular features if we have the room
@@ -826,6 +877,8 @@ void TrackKLT::perform_detection_stereo(const std::vector<cv::Mat> &img0pyr, con
   }
 }
 
+//用LK光流追踪匹配图0和图1的特征点:kpts0 VS kpts1
+//且利用RANSAC F矩阵来剔除外点:mask_out 取1为正常匹配；取0为失败匹配
 void TrackKLT::perform_matching(const std::vector<cv::Mat> &img0pyr, const std::vector<cv::Mat> &img1pyr, std::vector<cv::KeyPoint> &kpts0,
                                 std::vector<cv::KeyPoint> &kpts1, size_t id0, size_t id1, std::vector<uchar> &mask_out) {
 

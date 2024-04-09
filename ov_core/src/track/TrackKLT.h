@@ -133,7 +133,7 @@ protected:
 
   // Parameters for our FAST grid detector
   int threshold;
-  int grid_x;
+  int grid_x;     //普通网格cell大小
   int grid_y;
 
   // Minimum pixel distance to be "far away enough" to be a different extracted feature

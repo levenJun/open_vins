@@ -56,6 +56,10 @@ public:
    */
   static bool compare_response(cv::KeyPoint first, cv::KeyPoint second) { return first.response > second.response; }
 
+  //在有效普通网格valid_locs处,提取新的cv::FAST点
+        // 单个网格区域内单独提取,且取响应值最大的n个点,且做了非最大值抑制
+        // 且只提取固定的mask空白处的点
+        // 然后还做了亚像素refine(没细看)
   /**
    * @brief This function will perform grid extraction using FAST.
    * @param img Image we will do FAST extraction on
@@ -85,7 +89,7 @@ public:
     // NOTE:    -> 1 = num_features / (grid_x * grid_y)
     // NOTE:    -> grid_x = ratio * grid_y (keep the original grid ratio)
     // NOTE:    -> grid_y = sqrt(num_features / ratio)
-    if (num_features < grid_x * grid_y) {
+    if (num_features < grid_x * grid_y) {                                             //网格数过多,重新均匀分配网格
       double ratio = (double)grid_x / (double)grid_y;
       grid_y = std::ceil(std::sqrt(num_features / ratio));
       grid_x = std::ceil(grid_y * ratio);
