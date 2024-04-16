@@ -365,6 +365,13 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
 
   // Now, lets get all features that should be used for an update that are lost in the newest frame
   // We explicitly request features that have not been deleted (used) in another update step
+  //feats_lost:state->_timestamp是最新帧时间,最新帧之前追踪到的所有特征-trackFEATS. 但是最新帧未追踪到,认为是追丢lost的特征!
+      //如果feats_lost特征同时也是feats_marg特征,那么从feats_lost中移除
+  //feats_marg:滑窗最老帧,追踪到的所有特征-trackFEATS.      不作为状态的特征,只作EKF的updat,且会被边缘化掉.
+      //如果feats_marg特征追踪次数很多(==滑窗大小),会被剪切到feats_maxtracks中.  即feats_marg都是剩余的没达到最大追踪次数的特征!
+  //feats_maxtracks:长期追踪的feats_marg特征.之后还会被剪切到feats_slam中
+      //但剪切到feats_slam数目有上限(限制eskf状态规模)
+  //feats_slam:滑窗最老帧,追踪到的所有特征-trackARUCO.      作为状态的特征,作EKF的update,且不会被边缘化掉.
   std::vector<std::shared_ptr<Feature>> feats_lost, feats_marg, feats_slam;
   feats_lost = trackFEATS->get_feature_database()->features_not_containing_newer(state->_timestamp, false, true);
 
@@ -437,6 +444,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     it0++;
   }
 
+  // 长期追踪的feats_maxtracks特征,之后还会被剪切到feats_slam中.
+  // 但是剪切数目会有上限,未剪切剩余的还保留在feats_maxtracks中
   // Append a new SLAM feature if we have the room to do so
   // Also check that we have waited our delay amount (normally prevents bad first set of slam points)
   if (state->_options.max_slam_features > 0 && message.timestamp - startup_time >= params.dt_slam_delay &&
@@ -452,6 +461,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     }
   }
 
+  //把当前帧的_features_SLAM,也加入到feats_slam
+  //如果当前帧的_features_SLAM点,没有被trackFEATS追踪到,会被置为需要边缘化:landmark.second->should_marg = true;
   // Loop through current SLAM features, we have tracks of them, grab them for this update!
   // NOTE: if we have a slam feature that has lost tracking, then we should marginalize it out
   // NOTE: we only enforce this if the current camera message is where the feature was seen from
@@ -475,11 +486,15 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
       landmark.second->should_marg = true;
   }
 
+  //对标记为需要边缘化的state->_features_SLAM特征,执行边缘化,且从state->_features_SLAM 中删除
   // Lets marginalize out all old SLAM features here
   // These are ones that where not successfully tracked into the current frame
   // We do *NOT* marginalize out our aruco tags landmarks
   StateHelper::marginalize_slam(state);
 
+  //将feats_slam区分为:
+  //    feats_slam_UPDATE:包含在state->_features_SLAM中
+  //    feats_slam_DELAYED:未包含在state->_features_SLAM中
   // Separate our SLAM features into new ones, and old ones
   std::vector<std::shared_ptr<Feature>> feats_slam_DELAYED, feats_slam_UPDATE;
   for (size_t i = 0; i < feats_slam.size(); i++) {
@@ -494,6 +509,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     }
   }
 
+  //将feats_lost特征(最新帧追踪丢的特征),feats_marg特征(滑窗最老帧追上但是未达最高次数的特征),feats_maxtracks特征(滑窗最老帧追上但是已达最高次数的特征,而为被剪切进feats_slam的)
+  //全部汇总进featsup_MSCKF
   // Concatenate our MSCKF feature arrays (i.e., ones not being used for slam updates)
   std::vector<std::shared_ptr<Feature>> featsup_MSCKF = feats_lost;
   featsup_MSCKF.insert(featsup_MSCKF.end(), feats_marg.begin(), feats_marg.end());
@@ -502,6 +519,11 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   //===================================================================================
   // Now that we have a list of features, lets do the EKF update for MSCKF and SLAM!
   //===================================================================================
+
+  //以上步骤过后,我们获得了
+  //    featsup_MSCKF特征:feats_lost特征+残留的feats_marg特征+残留的feats_maxtracks特征
+                          // 按照追踪次数排序
+  //    feats_slam特征   :trackARUCO最老帧追踪到的特征 + trackFEATS达到最大追踪数的特征 + 最新帧state->_features_SLAM
 
   // Sort based on track length
   // TODO: we should have better selection logic here (i.e. even feature distribution in the FOV etc..)
@@ -529,6 +551,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   // Perform SLAM delay init and update
   // NOTE: that we provide the option here to do a *sequential* update
   // NOTE: this will be a lot faster but won't be as accurate.
+  // leven: SLAM特征是一段一段作后验update,避免太多SLAM特征影响性能
   std::vector<std::shared_ptr<Feature>> feats_slam_UPDATE_TEMP;
   while (!feats_slam_UPDATE.empty()) {
     // Get sub vector of the features we will update with

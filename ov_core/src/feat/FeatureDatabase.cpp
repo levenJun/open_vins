@@ -84,6 +84,10 @@ void FeatureDatabase::update_feature(size_t id, double timestamp, size_t cam_id,
   features_idlookup[id] = feat;
 }
 
+//state->_timestamp时间之前(不包含)已经在追踪的所有特征
+//在特征db中,特征的最新观测帧,比timestamp帧老,如此所有特征汇总起来,返回
+//skip_deleted:true-标记为删除的特征点,直接忽略不check
+//remove:true-check命中的特征从db中直接删除
 std::vector<std::shared_ptr<Feature>> FeatureDatabase::features_not_containing_newer(double timestamp, bool remove, bool skip_deleted) {
 
   // Our vector of features that do not have measurements after the specified time
@@ -166,6 +170,9 @@ std::vector<std::shared_ptr<Feature>> FeatureDatabase::features_containing_older
   return feats_old;
 }
 
+//在特征db中,把timestamp帧看到的所有特征,汇总到一起,并返回
+//skip_deleted:true-标记为删除的特征点,直接忽略不check
+//remove:true-check命中的特征从db中直接删除
 std::vector<std::shared_ptr<Feature>> FeatureDatabase::features_containing(double timestamp, bool remove, bool skip_deleted) {
 
   // Our vector of old features
@@ -183,6 +190,7 @@ std::vector<std::shared_ptr<Feature>> FeatureDatabase::features_containing(doubl
     // Break out if we found a single timestamp that is equal to the specified time
     bool has_timestamp = false;
     for (auto const &pair : (*it).second->timestamps) {
+      //特征的观测帧,包含timestamp帧
       has_timestamp = (std::find(pair.second.begin(), pair.second.end(), timestamp) != pair.second.end());
       if (has_timestamp) {
         break;

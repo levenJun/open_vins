@@ -63,6 +63,7 @@ public:
    * But if you wanted to do a keyframe system, you could selectively marginalize clones.
    * @return timestep of clone we will marginalize
    */
+  //返回窗口内时间戳最老的帧
   double margtimestep() {
     std::lock_guard<std::mutex> lock(_mutex_state);
     double time = INFINITY;

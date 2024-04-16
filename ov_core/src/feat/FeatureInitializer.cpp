@@ -27,14 +27,18 @@
 
 using namespace ov_core;
 
+//对输入特征作三角化
+//feat:输入特征
+//clonesCAM:滑窗多目相机pose列表:{ 相机id : {时间戳:pose} }
 bool FeatureInitializer::single_triangulation(std::shared_ptr<Feature> feat,
                                               std::unordered_map<size_t, std::unordered_map<double, ClonePose>> &clonesCAM) {
 
   // Total number of measurements
   // Also set the first measurement to be the anchor frame
   int total_meas = 0;
-  size_t anchor_most_meas = 0;
+  size_t anchor_most_meas = 0;//观测数最多的相机
   size_t most_meas = 0;
+  //统计观测总数,并统计哪个相机观测数最多
   for (auto const &pair : feat->timestamps) {
     total_meas += (int)pair.second.size();
     if (pair.second.size() > most_meas) {
@@ -42,14 +46,14 @@ bool FeatureInitializer::single_triangulation(std::shared_ptr<Feature> feat,
       most_meas = pair.second.size();
     }
   }
-  feat->anchor_cam_id = anchor_most_meas;
-  feat->anchor_clone_timestamp = feat->timestamps.at(feat->anchor_cam_id).back();
+  feat->anchor_cam_id = anchor_most_meas;//观测数最多的相机
+  feat->anchor_clone_timestamp = feat->timestamps.at(feat->anchor_cam_id).back();//观测主帧:观测数最多的相机,最新一个观测帧
 
   // Our linear system matrices
   Eigen::Matrix3d A = Eigen::Matrix3d::Zero();
   Eigen::Vector3d b = Eigen::Vector3d::Zero();
 
-  // Get the position of the anchor pose
+  // Get the position of the anchor pose//观测主帧的pose
   ClonePose anchorclone = clonesCAM.at(feat->anchor_cam_id).at(feat->anchor_clone_timestamp);
   const Eigen::Matrix<double, 3, 3> &R_GtoA = anchorclone.Rot();
   const Eigen::Matrix<double, 3, 1> &p_AinG = anchorclone.pos();
@@ -58,9 +62,11 @@ bool FeatureInitializer::single_triangulation(std::shared_ptr<Feature> feat,
   for (auto const &pair : feat->timestamps) {
 
     // Add CAM_I features
+    //如下,遍历本单特征在单个相机下的所有观测
     for (size_t m = 0; m < feat->timestamps.at(pair.first).size(); m++) {
 
       // Get the position of this clone in the global
+      // 得到观测帧具体pose,然后计算相对主观测帧的相对pose
       const Eigen::Matrix<double, 3, 3> &R_GtoCi = clonesCAM.at(pair.first).at(feat->timestamps.at(pair.first).at(m)).Rot();
       const Eigen::Matrix<double, 3, 1> &p_CiinG = clonesCAM.at(pair.first).at(feat->timestamps.at(pair.first).at(m)).pos();
 
@@ -71,6 +77,8 @@ bool FeatureInitializer::single_triangulation(std::shared_ptr<Feature> feat,
       p_CiinA.noalias() = R_GtoA * (p_CiinG - p_AinG);
 
       // Get the UV coordinate normal
+      // 特征的观测值是z=1平面上的值
+      // b_i: 将观测指转换到主帧坐标系下(尺度缺失)
       Eigen::Matrix<double, 3, 1> b_i;
       b_i << feat->uvs_norm.at(pair.first).at(m)(0), feat->uvs_norm.at(pair.first).at(m)(1), 1;
       b_i = R_AtoCi.transpose() * b_i;

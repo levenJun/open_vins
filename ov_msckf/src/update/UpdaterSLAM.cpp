@@ -69,16 +69,19 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
   rT0 = boost::posix_time::microsec_clock::local_time();
 
   // 0. Get all timestamps our clones are at (and thus valid measurement times)
+  // 0. 获取滑窗帧列表的时间戳
   std::vector<double> clonetimes;
   for (const auto &clone_imu : state->_clones_IMU) {
     clonetimes.emplace_back(clone_imu.first);
   }
 
   // 1. Clean all feature measurements and make sure they all have valid clone times
+  // feature_vec,删除特征点的观测帧:不在滑窗内的观测帧
   auto it0 = feature_vec.begin();
   while (it0 != feature_vec.end()) {
 
     // Clean the feature
+    //删除特征点的观测帧:不在滑窗内的观测帧
     (*it0)->clean_old_measurements(clonetimes);
 
     // Count how many measurements
@@ -98,6 +101,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
   rT1 = boost::posix_time::microsec_clock::local_time();
 
   // 2. Create vector of cloned *CAMERA* poses at each of our clone timesteps
+  // 2.滑窗存储的是IMU状态,现通过外参,恢复出多目相机的pose状态clones_cam:{ 相机id : {时间戳:pose} }
   std::unordered_map<size_t, std::unordered_map<double, FeatureInitializer::ClonePose>> clones_cam;
   for (const auto &clone_calib : state->_calib_IMUtoCAM) {
 
@@ -118,6 +122,8 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
   }
 
   // 3. Try to triangulate all MSCKF or new SLAM features that have measurements
+  // 3. 对特征点作三角化,且进一步用GN作refine
+  //    
   auto it1 = feature_vec.begin();
   while (it1 != feature_vec.end()) {
 
@@ -232,7 +238,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.chi2_multipler : _options_slam.chi2_multipler;
     if (StateHelper::initialize(state, landmark, Hx_order, H_x, H_f, R, res, chi2_multipler)) {
       state->_features_SLAM.insert({(*it2)->featid, landmark});
-      (*it2)->to_delete = true;
+      (*it2)->to_delete = true;//临时点已经作为正式点加入了滑窗状态,可以从临时点集中删除了
       it2++;
     } else {
       (*it2)->to_delete = true;
@@ -250,6 +256,15 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
   }
 }
 
+//1,特征点清理无效的观测:观测总数少于1/2?
+//2,(无)相机状态恢复: 从imu的clone状态恢复多目相机的窗口状态
+//3,(无)对特征点作三角化: 窗口内的所有特征都重新三角化? 三角化失败的直接删除
+//4,对特征作线性化,并作零空间投影: res, Hx, Hf --> res, Hx. 
+//    Givens旋转来作零空间投影
+//    此处还对特征fi作卡方check
+//5,(无)QR分解来对所有特征的观测数降维
+//    Givens旋转作QR分解
+//6,作EKF后验刷新: 基于视觉特征观测
 void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
 
   // Return if no features

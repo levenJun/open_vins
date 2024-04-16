@@ -23,10 +23,12 @@
 
 using namespace ov_core;
 
+//valid_times是当前滑窗的关键帧时间戳
+//删除特征点的观测帧:不在滑窗内的观测帧
 void Feature::clean_old_measurements(const std::vector<double> &valid_times) {
 
   // Loop through each of the cameras we have
-  for (auto const &pair : timestamps) {
+  for (auto const &pair : timestamps) {//遍历多目相机
 
     // Assert that we have all the parts of a measurement
     assert(timestamps[pair.first].size() == uvs[pair.first].size());

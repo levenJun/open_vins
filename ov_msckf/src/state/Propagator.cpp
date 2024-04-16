@@ -100,6 +100,7 @@ void Propagator::propagate_and_clone(std::shared_ptr<State> state, double timest
   }
   assert(std::abs((time1 - time0) - dt_summed) < 1e-4);
 
+  //leven:下面这里是在干嘛?IMU内参也作为状态在估计?下面是扩展cov?
   // Last angular velocity (used for cloning when estimating time offset)
   // Remember to correct them before we store them
   Eigen::Vector3d last_a = Eigen::Vector3d::Zero();
@@ -137,6 +138,9 @@ void Propagator::propagate_and_clone(std::shared_ptr<State> state, double timest
   StateHelper::augment_clone(state, last_w);
 }
 
+//leven:快速imu积分,同时迭代协方差cov
+//返回的状态是:左乘R,右乘t,局部系v,最近陀螺仪w
+//返回的cov  :返回速度v是局部系的,所以cov也要调整
 bool Propagator::fast_state_propagate(std::shared_ptr<State> state, double timestamp, Eigen::Matrix<double, 13, 1> &state_plus,
                                       Eigen::Matrix<double, 12, 12> &covariance) {
 
@@ -195,6 +199,7 @@ bool Propagator::fast_state_propagate(std::shared_ptr<State> state, double times
     Eigen::Vector3d v_iinG = cache_state_est.block(7, 0, 3, 1);
     Eigen::Vector3d p_iinG = cache_state_est.block(4, 0, 3, 1);
 
+    //  (q, p, v, bg, ba)
     // State transition and noise matrix
     // TODO: should probably track the correlations with the IMU intrinsics if we are calibrating
     // TODO: currently this just does a quick discrete prediction using only the previous marg IMU uncertainty
@@ -242,24 +247,24 @@ bool Propagator::fast_state_propagate(std::shared_ptr<State> state, double times
   cache_t_off = 0.0;
 
   // Now record what the predicted state should be
-  Eigen::Vector4d q_Gtoi = cache_state_est.block(0, 0, 4, 1);
-  Eigen::Vector3d v_iinG = cache_state_est.block(7, 0, 3, 1);
-  Eigen::Vector3d p_iinG = cache_state_est.block(4, 0, 3, 1);
+  Eigen::Vector4d q_Gtoi = cache_state_est.block(0, 0, 4, 1);//左乘R
+  Eigen::Vector3d v_iinG = cache_state_est.block(7, 0, 3, 1);//右乘v
+  Eigen::Vector3d p_iinG = cache_state_est.block(4, 0, 3, 1);//右乘t
   state_plus.setZero();
-  state_plus.block(0, 0, 4, 1) = q_Gtoi;
-  state_plus.block(4, 0, 3, 1) = p_iinG;
-  state_plus.block(7, 0, 3, 1) = quat_2_Rot(q_Gtoi) * v_iinG; // local frame v_iini
+  state_plus.block(0, 0, 4, 1) = q_Gtoi;//左乘R
+  state_plus.block(4, 0, 3, 1) = p_iinG;//右乘t
+  state_plus.block(7, 0, 3, 1) = quat_2_Rot(q_Gtoi) * v_iinG; // local frame v_iini//局部系下v
   Eigen::Vector3d last_a = R_ACCtoIMU * Da * (prop_data.at(prop_data.size() - 1).am - bias_a);
   Eigen::Vector3d last_w = R_GYROtoIMU * Dw * (prop_data.at(prop_data.size() - 1).wm - bias_g - Tg * last_a);
-  state_plus.block(10, 0, 3, 1) = last_w;
+  state_plus.block(10, 0, 3, 1) = last_w;//最近一个w
 
   // Do a covariance propagation for our velocity (needs to be in local frame)
   // TODO: more properly do the covariance of the angular velocity here...
-  // TODO: it should be dependent on the state bias, thus correlated with the pose..
+  // TODO: it should be dependent on the state bias, thus correlated with the pose..  
   covariance.setZero();
   Eigen::Matrix<double, 15, 15> Phi = Eigen::Matrix<double, 15, 15>::Identity();
   Phi.block(6, 6, 3, 3) = quat_2_Rot(q_Gtoi);
-  Eigen::MatrixXd covariance_tmp = Phi * cache_state_covariance * Phi.transpose();
+  Eigen::MatrixXd covariance_tmp = Phi * cache_state_covariance * Phi.transpose();//因为最后返回的速度是局部系v,所有协方差cov要跟着修正
   covariance.block(0, 0, 9, 9) = covariance_tmp.block(0, 0, 9, 9);
   double dt = prop_data.at(prop_data.size() - 1).timestamp - prop_data.at(prop_data.size() - 2).timestamp;
   covariance.block(9, 9, 3, 3) = _noises.sigma_w_2 / dt * Eigen::Matrix3d::Identity();
@@ -436,6 +441,7 @@ void Propagator::predict_and_compute(std::shared_ptr<State> state, const ov_core
   }
 
   // Compute the new state mean value
+  // 只是积分并给出积分结果,还没有将积分结果写入state
   Eigen::Vector4d new_q;
   Eigen::Vector3d new_v, new_p;
   if (state->_options.integration_method == StateOptions::IntegrationMethod::ANALYTICAL) {

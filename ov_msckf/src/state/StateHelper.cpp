@@ -268,6 +268,7 @@ Eigen::MatrixXd StateHelper::get_full_covariance(std::shared_ptr<State> state) {
   return full_cov;
 }
 
+//leven:直接把边缘化帧:pose从状态列表删除,协方差对应的行列删除
 void StateHelper::marginalize(std::shared_ptr<State> state, std::shared_ptr<Type> marg) {
 
   // Check if the current state has the element we want to marginalize

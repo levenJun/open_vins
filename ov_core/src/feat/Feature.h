@@ -52,19 +52,21 @@ public:
   std::unordered_map<size_t, std::vector<Eigen::VectorXf>> uvs_norm;
 
   /// Timestamps of each UV measurement (mapped by camera ID)
+  //特征的观测帧列表
+  //{相机id: 相机对应的观测帧时间戳}
   std::unordered_map<size_t, std::vector<double>> timestamps;
 
   /// What camera ID our pose is anchored in!! By default the first measurement is the anchor.
   int anchor_cam_id = -1;
 
   /// Timestamp of anchor clone
-  double anchor_clone_timestamp;
+  double anchor_clone_timestamp;  //主参考帧
 
   /// Triangulated position of this feature, in the anchor frame
-  Eigen::Vector3d p_FinA;
+  Eigen::Vector3d p_FinA;         //在主帧下的局部坐标
 
   /// Triangulated position of this feature, in the global frame
-  Eigen::Vector3d p_FinG;
+  Eigen::Vector3d p_FinG;         //全局坐标
 
   /**
    * @brief Remove measurements that do not occur at passed timestamps.

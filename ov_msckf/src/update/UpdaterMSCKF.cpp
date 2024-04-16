@@ -55,6 +55,15 @@ UpdaterMSCKF::UpdaterMSCKF(UpdaterOptions &options, ov_core::FeatureInitializerO
   }
 }
 
+//1,特征点清理无效的观测:已经不在窗口内的帧的观测
+//2,相机状态恢复: 从imu的clone状态恢复多目相机的窗口状态
+//3,对特征点作三角化: 窗口内的所有特征都重新三角化? 三角化失败的直接删除
+//4,对特征作线性化,并作零空间投影: res, Hx, Hf --> res, Hx. 
+//    Givens旋转来作零空间投影
+//    此处还对特征fi作卡方check
+//5,QR分解来对所有特征的观测数降维
+//    Givens旋转作QR分解
+//6,作EKF后验刷新: 基于视觉特征观测
 void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
 
   // Return if no features
@@ -66,6 +75,7 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   rT0 = boost::posix_time::microsec_clock::local_time();
 
   // 0. Get all timestamps our clones are at (and thus valid measurement times)
+  //汇总窗口内所有的状态x, x以时间戳代表
   std::vector<double> clonetimes;
   for (const auto &clone_imu : state->_clones_IMU) {
     clonetimes.emplace_back(clone_imu.first);
@@ -76,8 +86,10 @@ void UpdaterMSCKF::update(std::shared_ptr<State> state, std::vector<std::shared_
   while (it0 != feature_vec.end()) {
 
     // Clean the feature
+    //特征被很多帧观测到,如果观测帧已经不在窗口内,直接删除观测帧
     (*it0)->clean_old_measurements(clonetimes);
 
+    //统计特征的观测帧数,少于2帧,认为特征已无效了,直接删除此特征!
     // Count how many measurements
     int ct_meas = 0;
     for (const auto &pair : (*it0)->timestamps) {
