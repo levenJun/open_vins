@@ -69,7 +69,8 @@ void UpdaterHelper::get_feature_jacobian_representation(std::shared_ptr<State> s
         -(1.0 / rho) * sin_phi, -(1.0 / (rho * rho)) * cos_phi;
     return;
   }
-
+  
+  // 上面是全局系下的表达,下面是锚定系下的表达
   //======================================================================
   //======================================================================
   //======================================================================
@@ -96,6 +97,7 @@ void UpdaterHelper::get_feature_jacobian_representation(std::shared_ptr<State> s
   }
   Eigen::Matrix3d R_CtoG = R_GtoI.transpose() * R_ItoC.transpose();
 
+  //对锚定系pose的雅可比
   // Jacobian for our anchor pose
   Eigen::Matrix<double, 3, 6> H_anc;
   H_anc.block(0, 0, 3, 3).noalias() = -R_GtoI.transpose() * skew_x(R_ItoC.transpose() * (p_FinA - p_IinC));
@@ -105,6 +107,7 @@ void UpdaterHelper::get_feature_jacobian_representation(std::shared_ptr<State> s
   x_order.push_back(state->_clones_IMU.at(feature.anchor_clone_timestamp));
   H_x.push_back(H_anc);
 
+  //对IMU到camera的外参雅可比
   // Get calibration Jacobians (for anchor clone)
   if (state->_options.do_calib_camera_pose) {
     Eigen::Matrix<double, 3, 6> H_calib;
@@ -189,6 +192,13 @@ void UpdaterHelper::get_feature_jacobian_representation(std::shared_ptr<State> s
   assert(false);
 }
 
+//state:所有滑窗状态
+//feature:单个特征点,包含单特征所有帧观测数据
+//x_order:单个特征观测帧对应的滑窗状态列表:
+//  相机按序号i往后排:i相机外参->i相机内参->i相机观测帧的imu的pose状态
+//res:  单个特征所有观测,组成的残差.按行从上往下排
+//H_f:  单个特征所有观测,对单特征参数坐标的雅可比
+//H_x:  单个特征所有观测,对相关滑窗状态的雅可比
 void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, UpdaterHelperFeature &feature, Eigen::MatrixXd &H_f,
                                               Eigen::MatrixXd &H_x, Eigen::VectorXd &res, std::vector<std::shared_ptr<Type>> &x_order) {
 
@@ -199,8 +209,9 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
   }
 
   // Compute the size of the states involved with this feature
+  // 1)统计单个特征对应所有观测帧的状态
   int total_hx = 0;
-  std::unordered_map<std::shared_ptr<Type>, size_t> map_hx;
+  std::unordered_map<std::shared_ptr<Type>, size_t> map_hx;//滑窗状态map:{单个状态:状态size}
   for (auto const &pair : feature.timestamps) {
 
     // Our extrinsics and intrinsics
@@ -263,6 +274,7 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
   //=========================================================================
   //=========================================================================
 
+  //2)计算特征的世界坐标
   // Calculate the position of this feature in the global frame
   // If anchored, then we need to calculate the position of the feature in the global
   Eigen::Vector3d p_FinG = feature.p_FinG;
@@ -292,15 +304,15 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
   // Allocate our residual and Jacobians
   int c = 0;
   int jacobsize = (feature.feat_representation != LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE) ? 3 : 1;
-  res = Eigen::VectorXd::Zero(2 * total_meas);
-  H_f = Eigen::MatrixXd::Zero(2 * total_meas, jacobsize);
-  H_x = Eigen::MatrixXd::Zero(2 * total_meas, total_hx);
+  res = Eigen::VectorXd::Zero(2 * total_meas);                    //残差维度=观测数*2
+  H_f = Eigen::MatrixXd::Zero(2 * total_meas, jacobsize);         //对特征点雅可比=3 or 1
+  H_x = Eigen::MatrixXd::Zero(2 * total_meas, total_hx);          //对滑窗状态雅可比
 
   // Derivative of p_FinG in respect to feature representation.
   // This only needs to be computed once and thus we pull it out of the loop
-  Eigen::MatrixXd dpfg_dlambda;
-  std::vector<Eigen::MatrixXd> dpfg_dx;
-  std::vector<std::shared_ptr<Type>> dpfg_dx_order;
+  Eigen::MatrixXd dpfg_dlambda;                       //Pw对特征点展开坐标雅可比  
+  std::vector<Eigen::MatrixXd> dpfg_dx;               //Pw对相关滑窗状态的雅可比
+  std::vector<std::shared_ptr<Type>> dpfg_dx_order;   //
   UpdaterHelper::get_feature_jacobian_representation(state, feature, dpfg_dlambda, dpfg_dx, dpfg_dx_order);
 
   // Assert that all the ones in our order are already in our local jacobian mapping
@@ -363,17 +375,24 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
       }
 
       // Compute Jacobians in respect to normalized image coordinates and possibly the camera intrinsics
+      // 归一化平面点加畸变到像素平面,这个过程的雅可比:
+      // dz_dzn-畸变后像素uv对无畸变z1坐标雅可比；
+      // dz_dzeta-畸变后像素uv对内参和畸变参数的雅可比
       Eigen::MatrixXd dz_dzn, dz_dzeta;
       state->_cam_intrinsics_cameras.at(pair.first)->compute_distort_jacobian(uv_norm, dz_dzn, dz_dzeta);
 
       // Normalized coordinates in respect to projection function
+      // 归一平面点 对 相机系Pc 雅可比
       Eigen::MatrixXd dzn_dpfc = Eigen::MatrixXd::Zero(2, 3);
       dzn_dpfc << 1 / p_FinCi(2), 0, -p_FinCi(0) / (p_FinCi(2) * p_FinCi(2)), 0, 1 / p_FinCi(2), -p_FinCi(1) / (p_FinCi(2) * p_FinCi(2));
 
       // Derivative of p_FinCi in respect to p_FinIi
+      // 相机系Pc 对 世界系Pw 雅可比
       Eigen::MatrixXd dpfc_dpfg = R_ItoC * R_GtoIi;
 
       // Derivative of p_FinCi in respect to camera clone state
+      //  相机系Pc 对 IMU的pose_R 雅可比
+      //  相机系Pc 对 IMU的pose_t 雅可比
       Eigen::MatrixXd dpfc_dclone = Eigen::MatrixXd::Zero(3, 6);
       dpfc_dclone.block(0, 0, 3, 3).noalias() = R_ItoC * skew_x(p_FinIi);
       dpfc_dclone.block(0, 3, 3, 3) = -dpfc_dpfg;
@@ -382,17 +401,22 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
       //=========================================================================
 
       // Precompute some matrices
+      // dz_dpfc:畸变后像素uv对相机系Pc坐标雅可比
+      // dz_dpfg:畸变后像素uv对世界系Pw坐标雅可比
       Eigen::MatrixXd dz_dpfc = dz_dzn * dzn_dpfc;
       Eigen::MatrixXd dz_dpfg = dz_dpfc * dpfc_dpfg;
 
       // CHAINRULE: get the total feature Jacobian
+      // 畸变后像素uv对特征点展开坐标雅可比  
       H_f.block(2 * c, 0, 2, H_f.cols()).noalias() = dz_dpfg * dpfg_dlambda;
 
       // CHAINRULE: get state clone Jacobian
+      // 畸变后像素uv 对 IMU的pose_Rt的雅可比
       H_x.block(2 * c, map_hx[clone_Ii], 2, clone_Ii->size()).noalias() = dz_dpfc * dpfc_dclone;
 
       // CHAINRULE: loop through all extra states and add their
       // NOTE: we add the Jacobian here as we might be in the anchoring pose for this measurement
+      // 畸变后像素uv 对 其它相关滑窗状态的雅可比
       for (size_t i = 0; i < dpfg_dx_order.size(); i++) {
         H_x.block(2 * c, map_hx[dpfg_dx_order.at(i)], 2, dpfg_dx_order.at(i)->size()).noalias() += dz_dpfg * dpfg_dx.at(i);
       }
@@ -400,6 +424,7 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
       //=========================================================================
       //=========================================================================
 
+      // 畸变后像素uv 对 IMU到相机外参的雅可比
       // Derivative of p_FinCi in respect to camera calibration (R_ItoC, p_IinC)
       if (state->_options.do_calib_camera_pose) {
 
@@ -412,6 +437,7 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
         H_x.block(2 * c, map_hx[calibration], 2, calibration->size()).noalias() += dz_dpfc * dpfc_dcalib;
       }
 
+      // 畸变后像素uv 对 相机内参和畸变参数的雅可比
       // Derivative of measurement in respect to distortion parameters
       if (state->_options.do_calib_camera_intrinsics) {
         H_x.block(2 * c, map_hx[distortion], 2, distortion->size()) = dz_dzeta;
@@ -424,6 +450,8 @@ void UpdaterHelper::get_feature_jacobian_full(std::shared_ptr<State> state, Upda
 }
 
 //用Givens旋转来作零空间投射
+//求H_f的左零空间,将H_f边缘化掉
+//同步作用于H_x和残差res
 void UpdaterHelper::nullspace_project_inplace(Eigen::MatrixXd &H_f, Eigen::MatrixXd &H_x, Eigen::VectorXd &res) {
 
   // Apply the left nullspace of H_f to all variables

@@ -223,6 +223,10 @@ void StateHelper::set_initial_covariance(std::shared_ptr<State> state, const Eig
   state->_Cov = state->_Cov.selfadjointView<Eigen::Upper>();
 }
 
+// 从大的协方差矩阵上拷贝截取一部分子协方差块
+  // 大协方差矩阵:滑窗状态总的协方差P
+  // 滑窗总状态:state. 目标状态:small_variables
+  // 小协方差矩阵:就拷贝目标状态对应的协方差矩阵
 Eigen::MatrixXd StateHelper::get_marginal_covariance(std::shared_ptr<State> state,
                                                      const std::vector<std::shared_ptr<Type>> &small_variables) {
 
@@ -391,6 +395,23 @@ std::shared_ptr<Type> StateHelper::clone(std::shared_ptr<State> state, std::shar
   return new_clone;
 }
 
+//1)对新增的单个slam特征,扩展滑窗状态和协方差
+//2)然后基于单特征所有观测(左零方程),来作ESKF后验刷新,刷新滑窗所有状态和协方差
+//new_variable:特征对象
+//H_order:涉及到的状态
+//H_R:对状态x的雅可比H_x
+//H_L:对特征f的雅可比H_f
+//R:噪声
+//res: 观测残差
+
+//对单特征雅可比Hf作QR分解压缩,压缩行直到特征维度
+//观测方程QR压缩后取上半部分r1，Hx1，Hf1和n1.作为带特征状态的观测方程
+//观测方程QR压缩后取下半部分r2，Hx2，0 和n2. 作为不带特征状态的观测方程
+//卡方检验,零空间投影后 res2和HX2 构成的方程是否病态:res2 = Hx2*X + n2
+//将特征扩增到滑窗状态中
+  //1)扩增滑窗协方差
+  //2)估计特征值,并加入滑窗状态  
+//基于左零空间映射的观测方程,来对滑窗整体状态作一次后验刷新!
 bool StateHelper::initialize(std::shared_ptr<State> state, std::shared_ptr<Type> new_variable,
                              const std::vector<std::shared_ptr<Type>> &H_order, Eigen::MatrixXd &H_R, Eigen::MatrixXd &H_L,
                              Eigen::MatrixXd &R, Eigen::VectorXd &res, double chi_2_mult) {
@@ -427,6 +448,7 @@ bool StateHelper::initialize(std::shared_ptr<State> state, std::shared_ptr<Type>
   size_t new_var_size = new_variable->size();
   assert((int)new_var_size == H_L.cols());
 
+  //对单特征雅可比Hf作QR分解压缩,压缩行直到特征维度
   Eigen::JacobiRotation<double> tempHo_GR;
   for (int n = 0; n < H_L.cols(); ++n) {
     for (int m = (int)H_L.rows() - 1; m > n; m--) {
@@ -443,12 +465,14 @@ bool StateHelper::initialize(std::shared_ptr<State> state, std::shared_ptr<Type>
 
   // Separate into initializing and updating portions
   // 1. Invertible initializing system
+  // 观测方程QR压缩后r1，Hx1，Hf1和n1 上半部分 : https://docs.openvins.com/update-delay.html  
   Eigen::MatrixXd Hxinit = H_R.block(0, 0, new_var_size, H_R.cols());
   Eigen::MatrixXd H_finit = H_L.block(0, 0, new_var_size, new_var_size);
   Eigen::VectorXd resinit = res.block(0, 0, new_var_size, 1);
   Eigen::MatrixXd Rinit = R.block(0, 0, new_var_size, new_var_size);
 
   // 2. Nullspace projected updating system
+  // 观测方程QR压缩后r2，Hx2，0 和n2 下半部分 : https://docs.openvins.com/update-delay.html  
   Eigen::MatrixXd Hup = H_R.block(new_var_size, 0, H_R.rows() - new_var_size, H_R.cols());
   Eigen::VectorXd resup = res.block(new_var_size, 0, res.rows() - new_var_size, 1);
   Eigen::MatrixXd Rup = R.block(new_var_size, new_var_size, R.rows() - new_var_size, R.rows() - new_var_size);
@@ -457,6 +481,10 @@ bool StateHelper::initialize(std::shared_ptr<State> state, std::shared_ptr<Type>
   //==========================================================
 
   // Do mahalanobis distance testing
+  // 卡方检验,零空间投影后 res2和HX2 构成的方程是否病态:res2 = Hx2*X + n2
+  // P_up:单特征观测涉及的状态对应的小协方差矩阵
+  // S是残差协方差矩阵:S= Hx2 * P_up * Hx2^T + R
+  // 卡方check值: chi2 = res^T * S^-1 * res
   Eigen::MatrixXd P_up = get_marginal_covariance(state, H_order);
   assert(Rup.rows() == Hup.rows());
   assert(Hup.cols() == P_up.cols());
@@ -473,15 +501,28 @@ bool StateHelper::initialize(std::shared_ptr<State> state, std::shared_ptr<Type>
   //==========================================================
   //==========================================================
   // Finally, initialize it in our state
+  //将特征扩增到滑窗状态中
+  //1)扩增滑窗协方差
+  //2)估计特征值,并加入滑窗状态  
   StateHelper::initialize_invertible(state, new_variable, H_order, Hxinit, H_finit, Rinit, resinit);
 
   // Update with updating portion
+  //上面完成了新特征状态到滑窗的扩增.
+  //而且观测方程也完成了QR分解的左零空间映射
+  //下面就基于左零空间映射的观测方程,来对滑窗整体状态作一次后验刷新!------------为什么取左零观测?不取完整观测方程?
   if (Hup.rows() > 0) {
     StateHelper::EKFUpdate(state, H_order, Hup, resup, Rup);
   }
   return true;
 }
 
+//新增特征状态,需要扩增滑窗协方差,并设置特征状态估计量.
+//1)扩增滑窗协方差
+//2)估计特征值,并加入滑窗状态
+//new_variable:待新增的特征状态
+//H_order:特征状态插入前的老状态
+//H_R: 压缩后Hx
+//H_L: 压缩后Hf
 void StateHelper::initialize_invertible(std::shared_ptr<State> state, std::shared_ptr<Type> new_variable,
                                         const std::vector<std::shared_ptr<Type>> &H_order, const Eigen::MatrixXd &H_R,
                                         const Eigen::MatrixXd &H_L, const Eigen::MatrixXd &R, const Eigen::VectorXd &res) {
@@ -529,6 +570,8 @@ void StateHelper::initialize_invertible(std::shared_ptr<State> state, std::share
 
   //==========================================================
   //==========================================================
+  // H_order是老状态
+  // M_i = Pxx * Hx^T
   // For each active variable find its M = P*H^T
   for (const auto &var : state->_variables) {
     // Sum up effect of each subjacobian= K_i= \sum_m (P_im Hm^T)
@@ -544,6 +587,7 @@ void StateHelper::initialize_invertible(std::shared_ptr<State> state, std::share
   //==========================================================
   //==========================================================
   // Get covariance of this small jacobian
+  //获取单特征观测涉及的老状态对应的小协方差矩阵:P_small
   Eigen::MatrixXd P_small = StateHelper::get_marginal_covariance(state, H_order);
 
   // M = H_R*Cov*H_R' + R
@@ -552,12 +596,14 @@ void StateHelper::initialize_invertible(std::shared_ptr<State> state, std::share
   M.triangularView<Eigen::Upper>() += R;
 
   // Covariance of the variable/landmark that will be initialized
+  // 计算新增特征状态对应的协方差Pff
   assert(H_L.rows() == H_L.cols());
   assert(H_L.rows() == new_variable->size());
   Eigen::MatrixXd H_Linv = H_L.inverse();
   Eigen::MatrixXd P_LL = H_Linv * M.selfadjointView<Eigen::Upper>() * H_Linv.transpose();
 
   // Augment the covariance matrix
+  // 新增特征状态后,总协方差会扩增,填充扩增协方差矩阵的四小块.
   size_t oldSize = state->_Cov.rows();
   state->_Cov.conservativeResizeLike(Eigen::MatrixXd::Zero(oldSize + new_variable->size(), oldSize + new_variable->size()));
   state->_Cov.block(0, oldSize, oldSize, new_variable->size()).noalias() = -M_a * H_Linv.transpose();
@@ -566,6 +612,7 @@ void StateHelper::initialize_invertible(std::shared_ptr<State> state, std::share
 
   // Update the variable that will be initialized (invertible systems can only update the new variable).
   // However this update should be almost zero if we already used a conditional Gauss-Newton to solve for the initial estimate
+  // 特征值的刷新微小增量.
   new_variable->update(H_Linv * res);
 
   // Now collect results, and add it to the state variables

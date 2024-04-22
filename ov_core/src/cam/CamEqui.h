@@ -159,9 +159,9 @@ public:
 
   /**
    * @brief Computes the derivative of raw distorted to normalized coordinate.
-   * @param uv_norm Normalized coordinates we wish to distort
-   * @param H_dz_dzn Derivative of measurement z in respect to normalized
-   * @param H_dz_dzeta Derivative of measurement z in respect to intrinic parameters
+   * @param uv_norm Normalized coordinates we wish to distort 无畸变的z1平面坐标
+   * @param H_dz_dzn Derivative of measurement z in respect to normalized  畸变后像素uv对无畸变z1坐标雅可比
+   * @param H_dz_dzeta Derivative of measurement z in respect to intrinic parameters 畸变后像素uv对内参和畸变参数的雅可比
    */
   void compute_distort_jacobian(const Eigen::Vector2d &uv_norm, Eigen::MatrixXd &H_dz_dzn, Eigen::MatrixXd &H_dz_dzeta) override {
 

@@ -58,6 +58,12 @@ UpdaterSLAM::UpdaterSLAM(UpdaterOptions &options_slam, UpdaterOptions &options_a
   }
 }
 
+//候选SLAM特征作延迟初始化.对单特征而言,流程如下
+//1)删除无效观测
+//2)三角化
+//3)计算单特征单观测的残差res,对特征f雅可比,对状态x雅可比.并堆叠单特征所有观测res,H_f,H_x
+//  残差res:3-1)世界系Pw投影为像素uv;3-2)世界系Pw分解为特征参数λ
+//4)res和H_f,H_x作零空间投影,边缘化特征
 void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
 
   // Return if no features
@@ -76,7 +82,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
   }
 
   // 1. Clean all feature measurements and make sure they all have valid clone times
-  // feature_vec,删除特征点的观测帧:不在滑窗内的观测帧
+  // 1. feature_vec,删除特征点的观测帧:不在滑窗内的观测帧
   auto it0 = feature_vec.begin();
   while (it0 != feature_vec.end()) {
 
@@ -188,6 +194,13 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     std::vector<std::shared_ptr<Type>> Hx_order;
 
     // Get the Jacobian for this feature
+    //state:所有滑窗状态
+    //feat:单个特征点,包含单特征所有帧观测数据
+    //Hx_order:单个特征观测帧对应的滑窗状态列表:
+    //  相机按序号i往后排:i相机外参->i相机内参->i相机观测帧的imu的pose状态
+    //res:  单个特征所有观测,组成的残差.按行从上往下排: 1)世界系Pw投影到像素uv, 2)Pw分解为特征参数λ
+    //H_f:  单个特征所有观测,对单特征参数坐标的雅可比
+    //H_x:  单个特征所有观测,对相关滑窗状态的雅可比    
     UpdaterHelper::get_feature_jacobian_full(state, feat, H_f, H_x, res, Hx_order);
 
     // If we are doing the single feature representation, then we need to remove the bearing portion
@@ -211,6 +224,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
       H_f = H_xf.block(0, H_xf.cols() - 1, H_xf.rows(), 1);
     }
 
+    // 作fej处理?
     // Create feature pointer (we will always create it of size three since we initialize the single invese depth as a msckf anchored
     // representation)
     int landmark_size = (feat_rep == LandmarkRepresentation::Representation::ANCHORED_INVERSE_DEPTH_SINGLE) ? 1 : 3;
@@ -236,6 +250,8 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
     // Try to initialize, delete new pointer if we failed
     double chi2_multipler =
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.chi2_multipler : _options_slam.chi2_multipler;
+    //1)对新增的单个slam特征,扩展滑窗状态和协方差
+    //2)然后基于单特征所有观测(左零方程),来作ESKF后验刷新,刷新滑窗所有状态和协方差        
     if (StateHelper::initialize(state, landmark, Hx_order, H_x, H_f, R, res, chi2_multipler)) {
       state->_features_SLAM.insert({(*it2)->featid, landmark});
       (*it2)->to_delete = true;//临时点已经作为正式点加入了滑窗状态,可以从临时点集中删除了
