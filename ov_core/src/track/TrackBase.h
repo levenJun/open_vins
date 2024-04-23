@@ -183,6 +183,8 @@ protected:
   std::map<size_t, cv::Mat> img_mask_last;
 
   /// Last set of tracked points
+  //  光流or描述子追踪匹配上的当前帧上特征?  
+  // map键是相机id
   std::unordered_map<size_t, std::vector<cv::KeyPoint>> pts_last;
 
   /// Set of IDs of each current feature in the database

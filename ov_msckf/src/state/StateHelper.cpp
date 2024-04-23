@@ -396,22 +396,22 @@ std::shared_ptr<Type> StateHelper::clone(std::shared_ptr<State> state, std::shar
 }
 
 //1)对新增的单个slam特征,扩展滑窗状态和协方差
-//2)然后基于单特征所有观测(左零方程),来作ESKF后验刷新,刷新滑窗所有状态和协方差
+  //1-1)对单特征雅可比Hf作QR分解压缩,压缩行直到特征维度
+  //1-2)观测方程QR压缩后取上半部分r1，Hx1，Hf1和n1.作为带特征状态的QR压缩观测方程
+  //1-3)观测方程QR压缩后取下半部分r2，Hx2，0 和n2. 作为不带特征状态的左零观测方程
+  //1-4)卡方检验,零空间投影后 res2和HX2 构成的方程是否病态:res2 = Hx2*X + n2
+  //1-5)将特征扩增到滑窗状态中
+    //1)扩增滑窗协方差
+    //2)估计特征值,并加入滑窗状态  
+//2)然后基于单特征所有观测(左零方程),来作ESKF后验刷新,刷新滑窗所有状态和协方差  
+  //基于左零空间映射的观测方程,来对滑窗整体状态作一次后验刷新!
+//params:
 //new_variable:特征对象
 //H_order:涉及到的状态
 //H_R:对状态x的雅可比H_x
 //H_L:对特征f的雅可比H_f
 //R:噪声
 //res: 观测残差
-
-//对单特征雅可比Hf作QR分解压缩,压缩行直到特征维度
-//观测方程QR压缩后取上半部分r1，Hx1，Hf1和n1.作为带特征状态的观测方程
-//观测方程QR压缩后取下半部分r2，Hx2，0 和n2. 作为不带特征状态的观测方程
-//卡方检验,零空间投影后 res2和HX2 构成的方程是否病态:res2 = Hx2*X + n2
-//将特征扩增到滑窗状态中
-  //1)扩增滑窗协方差
-  //2)估计特征值,并加入滑窗状态  
-//基于左零空间映射的观测方程,来对滑窗整体状态作一次后验刷新!
 bool StateHelper::initialize(std::shared_ptr<State> state, std::shared_ptr<Type> new_variable,
                              const std::vector<std::shared_ptr<Type>> &H_order, Eigen::MatrixXd &H_R, Eigen::MatrixXd &H_L,
                              Eigen::MatrixXd &R, Eigen::VectorXd &res, double chi_2_mult) {

@@ -486,15 +486,18 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
       landmark.second->should_marg = true;
   }
 
-  //对标记为需要边缘化的state->_features_SLAM特征,执行边缘化,且从state->_features_SLAM 中删除
+  //对标记为需要边缘化的state->_features_SLAM特征,执行边缘化
+  // 从滑窗状态中删除, 协方差对应的行列删除
+  // 从state->_features_SLAM 中删除
+
   // Lets marginalize out all old SLAM features here
   // These are ones that where not successfully tracked into the current frame
   // We do *NOT* marginalize out our aruco tags landmarks
   StateHelper::marginalize_slam(state);
 
   //将feats_slam区分为:
-  //    feats_slam_UPDATE:包含在state->_features_SLAM中
-  //    feats_slam_DELAYED:未包含在state->_features_SLAM中
+  //    feats_slam_UPDATE:包含在state->_features_SLAM中.   会直接用作eskf后验刷新.
+  //    feats_slam_DELAYED:未包含在state->_features_SLAM中. 延迟初始化,加入滑窗状态后再作eskf后验刷新.
   // Separate our SLAM features into new ones, and old ones
   std::vector<std::shared_ptr<Feature>> feats_slam_DELAYED, feats_slam_UPDATE;
   for (size_t i = 0; i < feats_slam.size(); i++) {
@@ -583,13 +586,13 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
     // Clear the MSCKF features only on the base camera
     // Thus we should be able to visualize the other unique camera stream
     // MSCKF features as they will also be appended to the vector
-    good_features_MSCKF.clear();
+    good_features_MSCKF.clear();  //good_features_MSCKF只是用作显示,不做其他
   }
 
   // Save all the MSCKF features used in the update
   for (auto const &feat : featsup_MSCKF) {
     good_features_MSCKF.push_back(feat->p_FinG);
-    feat->to_delete = true;
+    feat->to_delete = true;       //将有效的msckf特征重新置为false
   }
 
   //===================================================================================
@@ -605,6 +608,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
 
   // First do anchor change if we are about to lose an anchor pose
+  // 滑窗最老帧即将被margin掉,如果slam特征的锚帧刚好是最老帧,那么需要切换锚帧,切换为滑窗最新帧
   updaterSLAM->change_anchors(state);
 
   // Cleanup any features older than the marginalization time
@@ -616,6 +620,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   }
 
   // Finally marginalize the oldest clone if needed
+  // 直接边缘化帧:pose从状态列表删除,协方差对应的行列删除
   StateHelper::marginalize_old_clone(state);
   rT7 = boost::posix_time::microsec_clock::local_time();
 

@@ -187,6 +187,13 @@ bool VioManager::try_to_initialize(const ov_core::CameraData &message) {
   return false;
 }
 
+
+//1.对当前帧追踪上的特征和滑窗的slam特征(slam特征不作三角化),作三角化,然后统一投影到cam0
+    //三角化结果存储进active_tracks_posinG,投影结果存储进active_tracks_uvd
+//2.三角化特征时区分msckf特征和slam特征,但结果都存进active_tracks_posinG: msckf特征作三角化；slam特征直接取拿状态估计值.
+  //特征三角化时,需要计算Ax=b方程, 同一个特征有多帧观测,A和b在时间序列上连续多帧累积.
+  //历史A和b和观测计数和三角化结果,以map结构存储,累积在active_feat_linsys_A,active_feat_linsys_b,active_feat_linsys_count,active_tracks_posinG.
+  //最新A和b和观测计数和三角化结果,以map结构存储,累积在 active_feat_linsys_A_new,active_feat_linsys_b_new,active_feat_linsys_count_new,active_tracks_posinG_new.  
 void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message) {
 
   // Start timing
@@ -206,9 +213,13 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
 
   // Current active tracks in our frontend
   // TODO: should probably assert here that these are at the message time...
+  // 最新帧追踪匹配上的特征点
   auto last_obs = trackFEATS->get_last_obs();
   auto last_ids = trackFEATS->get_last_ids();
 
+  //特征三角化时,需要计算Ax=b方程, 同一个特征有多帧观测,A和b在时间序列上连续多帧累积.
+  //历史A和b和观测计数和三角化结果,以map结构存储,累积在active_feat_linsys_A,active_feat_linsys_b,active_feat_linsys_count,active_tracks_posinG.
+  //最新A和b和观测计数和三角化结果,以map结构存储,累积在 active_feat_linsys_A_new,active_feat_linsys_b_new,active_feat_linsys_count_new,active_tracks_posinG_new.
   // New set of linear systems that only contain the latest track info
   std::map<size_t, Eigen::Matrix3d> active_feat_linsys_A_new;
   std::map<size_t, Eigen::Vector3d> active_feat_linsys_b_new;
@@ -219,6 +230,7 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
   std::map<size_t, cv::Point2f> feat_uvs_in_cam0;
   for (auto const &cam_id : message.sensor_ids) {
 
+    //获取最新帧的两个相机的pose
     // IMU historical clone
     Eigen::Matrix3d R_GtoI = state->_clones_IMU.at(active_tracks_time)->Rot();
     Eigen::Vector3d p_IinG = state->_clones_IMU.at(active_tracks_time)->pos();
@@ -273,6 +285,7 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
       if (active_feat_linsys_count_new.at(featid) > 3) {
 
         // Recover feature estimate
+        //单个特征,基于多帧观测,解Ax=b方程得到三角化结果.
         Eigen::Matrix3d A = active_feat_linsys_A_new[featid];
         Eigen::Vector3d b = active_feat_linsys_b_new[featid];
         Eigen::MatrixXd p_FinG = A.colPivHouseholderQr().solve(b);
@@ -308,6 +321,9 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
     return;
 
   // Append our SLAM features we have
+  //三角化特征时区分msckf特征和slam特征,但结果都存进active_tracks_posinG
+  //msckf特征作三角化.
+  //slam特征直接取拿状态估计值.
   for (const auto &feat : state->_features_SLAM) {
     Eigen::Vector3d p_FinG = feat.second->get_xyz(false);
     if (LandmarkRepresentation::is_relative_representation(feat.second->_feat_representation)) {
@@ -338,6 +354,7 @@ void VioManager::retriangulate_active_tracks(const ov_core::CameraData &message)
 
   // 4. Next we can update our variable with the global position
   //    We also will project the features into the current frame
+  // 将所有有效的active特征都投影到相机0,结果存储进-active_tracks_uvd
   for (const auto &feat : active_tracks_posinG) {
 
     // For now skip features not seen from current frame

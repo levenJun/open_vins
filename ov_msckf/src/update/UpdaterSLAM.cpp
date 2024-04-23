@@ -64,6 +64,10 @@ UpdaterSLAM::UpdaterSLAM(UpdaterOptions &options_slam, UpdaterOptions &options_a
 //3)计算单特征单观测的残差res,对特征f雅可比,对状态x雅可比.并堆叠单特征所有观测res,H_f,H_x
 //  残差res:3-1)世界系Pw投影为像素uv;3-2)世界系Pw分解为特征参数λ
 //4)res和H_f,H_x作零空间投影,边缘化特征
+//5)作fej处理
+//6)单个slam特征正式新增并扩展滑窗状态
+//  6-1)对新增的单个slam特征,扩展滑窗状态和协方差
+//  6-2)然后基于单特征所有观测(左零方程),来作ESKF后验刷新,刷新滑窗所有状态和协方差        
 void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::shared_ptr<Feature>> &feature_vec) {
 
   // Return if no features
@@ -519,7 +523,7 @@ void UpdaterSLAM::change_anchors(std::shared_ptr<State> state) {
   // Get the marginalization timestep, and change the anchor for any feature seen from it
   // NOTE: for now we have anchor the feature in the same camera as it is before
   // NOTE: this also does not change the representation of the feature at all right now
-  double marg_timestep = state->margtimestep();
+  double marg_timestep = state->margtimestep(); //滑窗内最老帧
   for (auto &f : state->_features_SLAM) {
     // Skip any features that are in the global frame
     if (f.second->_feat_representation == LandmarkRepresentation::Representation::GLOBAL_3D ||
