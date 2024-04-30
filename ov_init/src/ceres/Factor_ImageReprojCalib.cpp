@@ -25,6 +25,7 @@
 
 using namespace ov_init;
 
+//世界点Pw投影到带畸变的像素uv,与观测量构成的观测残差!
 Factor_ImageReprojCalib::Factor_ImageReprojCalib(const Eigen::Vector2d &uv_meas_, double pix_sigma_, bool is_fisheye_)
     : uv_meas(uv_meas_), pix_sigma(pix_sigma_), is_fisheye(is_fisheye_) {
 
@@ -34,13 +35,13 @@ Factor_ImageReprojCalib::Factor_ImageReprojCalib(const Eigen::Vector2d &uv_meas_
   sqrtQ(1, 1) *= 1.0 / pix_sigma;
 
   // Parameters we are a function of
-  set_num_residuals(2);
-  mutable_parameter_block_sizes()->push_back(4); // q_GtoIi
+  set_num_residuals(2);                                                           //点特征观测总残差结果是2维
+  mutable_parameter_block_sizes()->push_back(4); // q_GtoIi                       //残差对应IMU的pose
   mutable_parameter_block_sizes()->push_back(3); // p_IiinG
-  mutable_parameter_block_sizes()->push_back(3); // p_FinG
-  mutable_parameter_block_sizes()->push_back(4); // q_ItoC
+  mutable_parameter_block_sizes()->push_back(3); // p_FinG                        //残差对应特征点坐标
+  mutable_parameter_block_sizes()->push_back(4); // q_ItoC                        //残差对应IMU和相机外参
   mutable_parameter_block_sizes()->push_back(3); // p_IinC
-  mutable_parameter_block_sizes()->push_back(8); // focal, center, distortion
+  mutable_parameter_block_sizes()->push_back(8); // focal, center, distortion     //残差对应相机内参
 }
 
 bool Factor_ImageReprojCalib::Evaluate(double const *const *parameters, double *residuals, double **jacobians) const {
