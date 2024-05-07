@@ -256,6 +256,7 @@ void UpdaterSLAM::delayed_init(std::shared_ptr<State> state, std::vector<std::sh
         ((int)feat.featid < state->_options.max_aruco_features) ? _options_aruco.chi2_multipler : _options_slam.chi2_multipler;
     //1)对新增的单个slam特征,扩展滑窗状态和协方差
     //2)然后基于单特征所有观测(左零方程),来作ESKF后验刷新,刷新滑窗所有状态和协方差        
+    //3)将新的特征加入滑窗特征列表:state->_features_SLAM
     if (StateHelper::initialize(state, landmark, Hx_order, H_x, H_f, R, res, chi2_multipler)) {
       state->_features_SLAM.insert({(*it2)->featid, landmark});
       (*it2)->to_delete = true;//临时点已经作为正式点加入了滑窗状态,可以从临时点集中删除了
